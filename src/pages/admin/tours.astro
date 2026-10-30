@@ -1049,6 +1049,8 @@ function renderizarItinerario(itinerary, activities) {
             ? `${escapeHtml(activity.itd_hor_ref)} · `
             : '';
 
+          activityCard.dataset.activityId = String(activity.itd_id_itd);
+
           activityCard.innerHTML = `
             <p class="tour-activity-title">
               ${escapeHtml(activity.itd_ord_itd)}.
@@ -1056,7 +1058,22 @@ function renderizarItinerario(itinerary, activities) {
             </p>
 
             <p>${time}${escapeHtml(activity.itd_des_itd || 'Sin descripción')}</p>
+
+            <div class="flex gap-2 flex-wrap mt-3">
+              <button type="button" class="admin-secondary-btn" data-action="edit-activity">
+                Editar
+              </button>
+              <button type="button" class="admin-secondary-btn" data-action="delete-activity">
+                Eliminar
+              </button>
+            </div>
           `;
+
+          activityCard.querySelector('[data-action="edit-activity"]')
+            .addEventListener('click', () => editarActividad(itinerary, activity));
+
+          activityCard.querySelector('[data-action="delete-activity"]')
+            .addEventListener('click', () => eliminarActividad(itinerary, activity));
 
           dayDetails.appendChild(activityCard);
         });
@@ -1065,6 +1082,182 @@ function renderizarItinerario(itinerary, activities) {
     });
 }
 
+
+async function obtenerTokenCSRF() {
+  const response = await fetch(`${API_URL}/csrf/`, {
+    method: 'GET',
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    throw new Error('No se pudo obtener el token CSRF.');
+  }
+
+  const data = await response.json();
+
+  if (!data.csrfToken) {
+    throw new Error('La respuesta no contiene el token CSRF.');
+  }
+
+  return data.csrfToken;
+}
+
+async function recargarActividades(itinerary) {
+  const response = await fetch(
+    `${API_URL}/itinerarios/${itinerary.iti_id_iti}/actividades/`,
+    { credentials: 'include' }
+  );
+
+  if (!response.ok) {
+    throw new Error(`No se pudieron cargar las actividades (HTTP ${response.status}).`);
+  }
+
+  const activities = await response.json();
+
+  if (!Array.isArray(activities)) {
+    throw new Error('La respuesta de actividades no es válida.');
+  }
+
+  renderizarItinerario(itinerary, activities);
+}
+
+async function editarActividad(itinerary, activity) {
+  const form = document.createElement('form');
+  form.className = 'tour-activity mt-3';
+
+  form.innerHTML = `
+    <h4 class="font-semibold mb-3">Editar actividad</h4>
+
+    <label class="block mb-1">Día</label>
+    <input name="day" type="number" min="1" required
+      class="admin-input w-full mb-3"
+      value="${escapeHtml(activity.itd_dia_num)}">
+
+    <label class="block mb-1">Orden</label>
+    <input name="order" type="number" min="1" required
+      class="admin-input w-full mb-3"
+      value="${escapeHtml(activity.itd_ord_itd)}">
+
+    <label class="block mb-1">Título</label>
+    <input name="title" type="text" maxlength="200" required
+      class="admin-input w-full mb-3"
+      value="${escapeHtml(activity.itd_tit_itd || '')}">
+
+    <label class="block mb-1">Hora</label>
+    <input name="hour" type="time"
+      class="admin-input w-full mb-3"
+      value="${escapeHtml((activity.itd_hor_ref || '').slice(0, 5))}">
+
+    <label class="block mb-1">Descripción</label>
+    <textarea name="description" rows="3"
+      class="admin-input w-full mb-3">${escapeHtml(activity.itd_des_itd || '')}</textarea>
+
+    <p class="text-sm mb-3" role="status"></p>
+
+    <div class="flex gap-3 flex-wrap">
+      <button type="submit" class="admin-primary-btn">Guardar cambios</button>
+      <button type="button" class="admin-secondary-btn">Cancelar</button>
+    </div>
+  `;
+
+  const card = itineraryContent.querySelector(
+    `[data-activity-id="${activity.itd_id_itd}"]`
+  );
+
+  if (!card) {
+    alert('No se encontró la tarjeta de esta actividad.');
+    return;
+  }
+
+  const previousForm = itineraryContent.querySelector('#tour-edit-activity-form');
+  if (previousForm) previousForm.remove();
+
+  form.id = 'tour-edit-activity-form';
+  card.insertAdjacentElement('afterend', form);
+
+  form.querySelector('button[type="button"]').addEventListener('click', () => form.remove());
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const message = form.querySelector('[role="status"]');
+    const submit = form.querySelector('button[type="submit"]');
+    const data = new FormData(form);
+
+    const payload = {
+      itd_dia_num: Number(data.get('day')),
+      itd_ord_itd: Number(data.get('order')),
+      itd_tit_itd: String(data.get('title') || '').trim(),
+      itd_des_itd: String(data.get('description') || '').trim() || null,
+      itd_hor_ref: String(data.get('hour') || '').trim() || null,
+    };
+
+    if (payload.itd_dia_num < 1 || payload.itd_ord_itd < 1 || !payload.itd_tit_itd) {
+      message.textContent = 'Día, orden y título son obligatorios.';
+      return;
+    }
+
+    submit.disabled = true;
+    message.textContent = 'Guardando cambios...';
+
+    try {
+      const csrfToken = await obtenerTokenCSRF();
+      const response = await fetch(
+        `${API_URL}/itinerarios/${itinerary.iti_id_iti}/actividades/${activity.itd_id_itd}/`,
+        {
+          method: 'PUT',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(result?.error || `Error HTTP ${response.status}`);
+      }
+
+      await recargarActividades(itinerary);
+    } catch (error) {
+      message.textContent = error.message || 'No se pudieron guardar los cambios.';
+      submit.disabled = false;
+    }
+  });
+
+  form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+async function eliminarActividad(itinerary, activity) {
+  const confirmed = confirm(
+    `¿Eliminar la actividad "${activity.itd_tit_itd}"? Esta acción no se puede deshacer.`
+  );
+
+  if (!confirmed) return;
+
+  try {
+    const csrfToken = await obtenerTokenCSRF();
+    const response = await fetch(
+      `${API_URL}/itinerarios/${itinerary.iti_id_iti}/actividades/${activity.itd_id_itd}/eliminar/`,
+      {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: { 'X-CSRFToken': csrfToken },
+      }
+    );
+
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(result?.error || `Error HTTP ${response.status}`);
+    }
+
+    await recargarActividades(itinerary);
+  } catch (error) {
+    alert(error.message || 'No se pudo eliminar la actividad.');
+  }
+}
 
 function mostrarFormularioActividad(itinerary) {
   const existingForm = itineraryContent.querySelector(
@@ -1215,12 +1408,28 @@ function mostrarFormularioActividad(itinerary) {
     message.textContent = 'Guardando actividad...';
 
     try {
+      const csrfResponse = await fetch(`${API_URL}/csrf/`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+
+      if (!csrfResponse.ok) {
+        throw new Error('No se pudo obtener el token CSRF.');
+      }
+
+      const csrfData = await csrfResponse.json();
+
+      if (!csrfData.csrfToken) {
+        throw new Error('La respuesta no contiene el token CSRF.');
+      }
+
       const response = await fetch(
         `${API_URL}/itinerarios/${itinerary.iti_id_iti}/actividades/crear/`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'X-CSRFToken': csrfData.csrfToken,
           },
           credentials: 'include',
           body: JSON.stringify(payload),
@@ -1294,100 +1503,6 @@ document
 /* =========================================================
    RENDER ITINERARY
 ========================================================= */
-
-function renderizarItinerario(itinerary, activities) {
-  itineraryContent.innerHTML = `
-    <h3 class="text-lg font-semibold">
-      ${escapeHtml(itinerary.iti_tit_iti || 'Itinerario sin título')}
-    </h3>
-
-    <p class="mt-2">
-      ${escapeHtml(itinerary.iti_des_gen || 'Sin descripción general.')}
-    </p>
-
-    <div class="mt-4">
-      <button
-        type="button"
-        id="tour-add-activity"
-        class="admin-primary-btn"
-      >
-        + Agregar actividad
-      </button>
-    </div>
-
-    <div id="tour-days-container"></div>
-  `;
-
-  const daysContainer =
-    itineraryContent.querySelector('#tour-days-container');
-
-  if (!Array.isArray(activities)) {
-    daysContainer.textContent =
-      'La respuesta de actividades no tiene el formato esperado.';
-    return;
-  }
-
-  if (activities.length === 0) {
-    daysContainer.innerHTML = `
-      <p class="mt-4 text-sm opacity-70">
-        Todavía no hay actividades. Puedes comenzar agregando la primera.
-      </p>
-    `;
-    return;
-  }
-
-  const groupedDays = {};
-
-  activities.forEach((activity) => {
-    const day = activity.itd_dia_num;
-
-    if (!groupedDays[day]) {
-      groupedDays[day] = [];
-    }
-
-    groupedDays[day].push(activity);
-  });
-
-  Object.keys(groupedDays)
-    .sort((a, b) => Number(a) - Number(b))
-    .forEach((day) => {
-      const dayDetails = document.createElement('details');
-
-      dayDetails.className = 'tour-day';
-      dayDetails.open = true;
-
-      const summary = document.createElement('summary');
-      summary.textContent = `Día ${day}`;
-
-      dayDetails.appendChild(summary);
-
-      groupedDays[day]
-        .sort((a, b) => a.itd_ord_itd - b.itd_ord_itd)
-        .forEach((activity) => {
-          const activityCard = document.createElement('div');
-
-          activityCard.className = 'tour-activity';
-
-          const time = activity.itd_hor_ref
-            ? `${escapeHtml(activity.itd_hor_ref)} · `
-            : '';
-
-          activityCard.innerHTML = `
-            <p class="tour-activity-title">
-              ${escapeHtml(activity.itd_ord_itd)}.
-              ${escapeHtml(activity.itd_tit_itd)}
-            </p>
-
-            <p>${time}${escapeHtml(activity.itd_des_itd || 'Sin descripción')}</p>
-          `;
-
-          dayDetails.appendChild(activityCard);
-        });
-
-      daysContainer.appendChild(dayDetails);
-    });
-}
-
 
 /* =========================================================
    CLOSE TOUR DETAILS
@@ -1929,129 +2044,127 @@ document
         };
 
 
+  
       /* -------------------------------------------------------
-         ENABLE / DISABLE
+         ENABLE / DISABLE - PERSISTE EN DJANGO
       -------------------------------------------------------- */
 
       row.querySelector('.tour-toggle').onclick =
-        () => {
+        async () => {
+          const button = row.querySelector('.tour-toggle');
+          const estabaActivo = row.dataset.status === 'Active';
+          const nuevoEstado = estabaActivo ? 'inactivo' : 'activo';
 
-          const active =
-            row.dataset.status === 'Active';
+          button.disabled = true;
 
+          try {
+            const csrfToken = await obtenerTokenCSRF();
 
-          row.dataset.status =
-            active
-              ? 'Inactive'
-              : 'Active';
-
-
-          const status =
-            row.querySelector(
-              '.tour-status'
+            const tour = loadedTours.find(
+              (item) => String(item.tou_id_tou) === String(row.dataset.id)
             );
 
+            if (!tour) {
+              throw new Error('No se encontraron los datos del tour.');
+            }
 
-          status.textContent =
-            row.dataset.status;
-
-
-          status.className =
-            `
-              admin-status
-              tour-status
-              ${
-                active
-                  ? 'inactive'
-                  : 'approved'
+            const response = await fetch(
+              `${API_URL}/tours/${row.dataset.id}/editar/`,
+              {
+                method: 'PUT',
+                credentials: 'include',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-CSRFToken': csrfToken,
+                },
+                body: JSON.stringify({
+                  tou_nom_tou: tour.tou_nom_tou,
+                  tou_des_tou: tour.tou_des_tou ?? '',
+                  tou_dur_hor: tour.tou_dur_hor,
+                  tou_dur_dia: tour.tou_dur_dia,
+                  tou_cup_max: tour.tou_cup_max,
+                  tou_est_tou: nuevoEstado,
+                }),
               }
-            `;
+            );
 
+            const result = await response.json().catch(() => ({}));
 
-          row.querySelector(
-            '.tour-toggle'
-          ).textContent =
-            active
-              ? 'Enable'
-              : 'Disable';
+            if (!response.ok) {
+              throw new Error(result.error || `Error HTTP ${response.status}`);
+            }
 
-
-          applyFilters();
-
-
-          showToast(
-            `Tour ${
-              active
-                ? 'disabled'
-                : 'enabled'
-            }.`
-          );
-
+            await cargarToursDesdeDjango();
+            showToast(
+              nuevoEstado === 'activo'
+                ? 'Tour activado correctamente.'
+                : 'Tour desactivado correctamente.'
+            );
+          } catch (error) {
+            console.error('Error cambiando estado del tour:', error);
+            showToast(error.message || 'No se pudo cambiar el estado.');
+          } finally {
+            button.disabled = false;
+          }
         };
 
-
+    
       /* -------------------------------------------------------
-         DELETE
+         DELETE - ELIMINACIÓN REAL EN DJANGO
       -------------------------------------------------------- */
 
       row.querySelector('.tour-delete').onclick =
         async () => {
+          const ok = await AdminUI.confirm({
+            tone: 'danger',
+            icon: '!',
+            title: '¿Eliminar este tour?',
+            message: 'Se solicitará a Django eliminar el tour.',
+            details: `
+              <b>${row.querySelector('.tour-name').textContent}</b>
+              <br>
+              <span>ID: ${row.dataset.id}</span>
+            `,
+            confirmText: 'Eliminar tour',
+            cancelText: 'Conservar tour',
+          });
 
-          const ok =
-            await AdminUI.confirm({
+          if (!ok) return;
 
-              tone: 'danger',
+          const button = row.querySelector('.tour-delete');
+          button.disabled = true;
 
-              icon: '!',
+          try {
+            const csrfToken = await obtenerTokenCSRF();
 
-              title:
-                'Delete this tour?',
-
-              message:
-                'This tour will be removed from the current frontend prototype session.',
-
-              details:
-                `
-                  <b>
-                    ${row.querySelector(
-                      '.tour-name'
-                    ).textContent}
-                  </b>
-
-                  <br>
-
-                  <span>
-                    ${row.dataset.id}
-                    ·
-                    ${row.querySelector(
-                      '.tour-destination'
-                    ).textContent}
-                  </span>
-                `,
-
-              confirmText:
-                'Delete tour',
-
-              cancelText:
-                'Keep tour',
-
-            });
-
-
-          if (ok) {
-
-            row.remove();
-
-            showToast(
-              'Tour deleted from this browser session.'
+            const response = await fetch(
+              `${API_URL}/tours/${row.dataset.id}/eliminar/`,
+              {
+                method: 'DELETE',
+                credentials: 'include',
+                headers: {
+                  'X-CSRFToken': csrfToken,
+                },
+              }
             );
 
-          }
+            const result = await response.json().catch(() => ({}));
 
+            if (!response.ok) {
+              throw new Error(result.error || `Error HTTP ${response.status}`);
+            }
+
+            await cargarToursDesdeDjango();
+            showToast('Tour eliminado correctamente.');
+          } catch (error) {
+            console.error('Error eliminando tour:', error);
+            showToast(error.message || 'No se pudo eliminar el tour.');
+          } finally {
+            button.disabled = false;
+          }
         };
 
-    };
-
+     };
 
     /* =========================================================
        ADD TOUR BUTTON
@@ -2168,221 +2281,75 @@ document
        FORM SUBMIT
     ========================================================== */
 
-    form.addEventListener(
-      'submit',
-      (event) => {
-
-        event.preventDefault();
-
-
-        const name =
-          document.querySelector(
-            '#tour-name'
-          ).value.trim();
-
-
-        const destination =
-          document.querySelector(
-            '#tour-destination'
-          ).value;
-
-
-        const status =
-          document.querySelector(
-            '#tour-active'
-          ).value;
-
-
-        /* -----------------------------------------------------
-           EDIT EXISTING TOUR
-        ------------------------------------------------------ */
-
-        if (editingRow) {
-
-          editingRow.querySelector(
-            '.tour-name'
-          ).textContent =
-            name;
-
-
-          editingRow.querySelector(
-            '.tour-destination'
-          ).textContent =
-            destination;
-
-
-          editingRow.dataset.status =
-            status;
-
-
-          editingRow.querySelector(
-            '.tour-status'
-          ).textContent =
-            status;
-
-
-          editingRow.querySelector(
-            '.tour-status'
-          ).className =
-            `
-              admin-status
-              tour-status
-              ${
-                status === 'Active'
-                  ? 'approved'
-                  : 'inactive'
-              }
-            `;
-
-
-          if (previewData) {
-
-            editingRow.querySelector(
-              'img'
-            ).src =
-              previewData;
-
-          }
-
-
-          showToast(
-            'Tour updated.'
-          );
-
-        }
-
-
-        /* -----------------------------------------------------
-           CREATE FRONTEND PROTOTYPE TOUR
-        ------------------------------------------------------ */
-
-        else {
-
-          const id =
-            `TOU-${String(nextId++).padStart(4, '0')}`;
-
-
-          const tr =
-            document.createElement('tr');
-
-
-          tr.dataset.id = id;
-
-          tr.dataset.status = status;
-
-
-          tr.innerHTML = `
-
-            <td>
-              <img
-                class="admin-tour-thumb"
-                src="${
-                  previewData ||
-                  '/assets/baltinache.jpg'
-                }"
-                alt="${escapeHtml(name)}"
-              >
-            </td>
-
-
-            <td>
-              ${id}
-            </td>
-
-
-            <td>
-              <b class="tour-name">
-                ${escapeHtml(name)}
-              </b>
-            </td>
-
-
-            <td class="tour-destination">
-              ${escapeHtml(destination)}
-            </td>
-
-
-            <td>
-              <span class="admin-readonly">
-                Pending pricing engine
-              </span>
-            </td>
-
-
-            <td>
-              <span
-                class="
-                  admin-status
-                  tour-status
-                  ${
-                    status === 'Active'
-                      ? 'approved'
-                      : 'inactive'
-                  }
-                "
-              >
-                ${status}
-              </span>
-            </td>
-
-
-            <td>
-              <div class="admin-row-actions">
-
-                <button
-                  class="tour-edit"
-                  type="button"
-                >
-                  Edit
-                </button>
-
-
-                <button
-                  class="tour-toggle"
-                  type="button"
-                >
-                  ${
-                    status === 'Active'
-                      ? 'Disable'
-                      : 'Enable'
-                  }
-                </button>
-
-
-                <button
-                  class="danger tour-delete"
-                  type="button"
-                >
-                  Delete
-                </button>
-
-              </div>
-            </td>
-
-          `;
-
-
-          body.prepend(tr);
-
-
-          bindRow(tr);
-
-
-          showToast(
-            'Tour added to the frontend prototype.'
-          );
-
-        }
-
-
-        dialog.close();
-
-
-        applyFilters();
-
-      }
+    
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const name = document.querySelector('#tour-name').value.trim();
+  const description = document.querySelector('#tour-description').value.trim();
+  const duration = document.querySelector('#tour-duration').value.trim();
+  const status = document.querySelector('#tour-active').value;
+  const capacityValue = document.querySelector('#tour-capacity').value;
+
+  const hoursMatch = duration.match(/(\d+(?:[.,]\d+)?)\s*hours?/i);
+  const durationHours = hoursMatch
+    ? Number(hoursMatch[1].replace(',', '.'))
+    : null;
+
+  const capacity = capacityValue === ''
+    ? null
+    : Number(capacityValue);
+
+  const payload = {
+    tou_nom_tou: name,
+    tou_des_tou: description,
+    tou_dur_hor: durationHours,
+    tou_dur_dia: null,
+    tou_cup_max: capacity,
+    tou_est_tou: status === 'Active' ? 'activo' : 'inactivo',
+  };
+
+  try {
+    const csrfToken = await obtenerTokenCSRF();
+
+    const editing = Boolean(editingRow);
+    const url = editing
+      ? `${API_URL}/tours/${editingRow.dataset.id}/editar/`
+      : `${API_URL}/tours/crear/`;
+
+    const response = await fetch(url, {
+      method: editing ? 'PUT' : 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || `Error HTTP ${response.status}`
+      );
+    }
+
+    dialog.close();
+    reset();
+
+    await cargarToursDesdeDjango();
+
+    showToast(
+      editing
+        ? 'Tour actualizado correctamente.'
+        : 'Tour creado correctamente.'
     );
-
+  } catch (error) {
+    console.error('Error al guardar el tour:', error);
+    showToast(error.message || 'No se pudo guardar el tour.');
+  }
+});
 
     /* =========================================================
        FILTER TABLE

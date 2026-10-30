@@ -13,6 +13,22 @@ export type BookingSeed = {
 // Frontend-only booking seed. Django will later return live availability,
 // schedules, approval deadlines and payment session data using these same IDs.
 export const bookingSeeds: BookingSeed[] = [
+
+
+    {
+    id: 'BKGCFG-DADDY',
+    tourId: 'TOU-0001',
+    tourSlug: 'daddy',
+    scheduleIds: ['HOR-DADDY-01', 'HOR-DADDY-02'],
+    schedules: [
+      { id: 'HOR-DADDY-01', label: '08:00 AM' },
+      { id: 'HOR-DADDY-02', label: '02:30 PM' },
+    ],
+    blockedDayNumbers: [],
+    maxTravellers: 8,
+    approvalBusinessDays: 5,
+    paymentProvider: 'Webpay',
+  },
   {
     id: 'BKGCFG-0001',
     tourId: 'TOU-0001',

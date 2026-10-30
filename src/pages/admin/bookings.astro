@@ -1,11 +1,690 @@
 ---
-import AdminLayout from '../../layouts/AdminLayout.astro'; import AdminPageHeader from '../../components/admin/AdminPageHeader.astro'; import { adminReservations } from '../../data/admin';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
 ---
+
 <AdminLayout title="Reservations" active="bookings">
-  <AdminPageHeader title="Reservations" description="Review dates, travellers and reservation status. Prototype actions work immediately in the browser and will later map to Django endpoints." />
-  <div class="admin-panel mt-7"><div class="admin-toolbar"><input id="booking-search" placeholder="Search reservation or traveller..."/><select id="booking-filter"><option value="all">All statuses</option><option>Pending approval</option><option>Approved</option><option>Paid</option><option>Cancelled</option><option>Expired</option></select></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Reservation</th><th>Traveller</th><th>Tour</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody id="booking-body">{adminReservations.map((r)=><tr data-status={r.status}><td>{r.id}</td><td><b class="booking-traveller">{r.traveller}</b></td><td class="booking-tour">{r.tour}</td><td class="booking-date">{r.date}</td><td><span class:list={['admin-status booking-status', r.status.includes('Pending')?'pending':r.status==='Paid'?'paid':'approved']}>{r.status}</span></td><td><div class="admin-row-actions"><button class="booking-view">View</button><button class="booking-date-btn">Change date</button><button class="booking-approve">Approve</button><button class="danger booking-cancel">Cancel</button></div></td></tr>)}</tbody></table></div></div>
-  <dialog id="booking-dialog" class="admin-modal"><div class="admin-modal-head"><div><p>Reservation details</p><h2 id="booking-dialog-id">Reservation</h2></div><button class="admin-modal-close" type="button" data-close>×</button></div><div class="admin-modal-body"><div class="admin-form-grid"><label class="admin-field"><span>Traveller</span><input id="booking-view-traveller" readonly/></label><label class="admin-field"><span>Tour</span><input id="booking-view-tour" readonly/></label><label class="admin-field"><span>Date</span><input id="booking-view-date" readonly/></label><label class="admin-field"><span>Status</span><input id="booking-view-status" readonly/></label><label class="admin-field full"><span>Prototype note</span><textarea rows="3" readonly>Payment, passengers and approval-deadline data will come from Django/MongoDB later.</textarea></label></div></div><div class="admin-modal-actions"><button class="admin-primary-btn" type="button" data-close>Close</button></div></dialog><div id="admin-toast" class="admin-toast"></div>
-<script is:inline>
-const body=document.querySelector('#booking-body'),dlg=document.querySelector('#booking-dialog'),toast=document.querySelector('#admin-toast');const note=m=>{toast.textContent=m;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),1900)};const cls=s=>s==='Paid'?'paid':s==='Cancelled'||s==='Expired'?'cancelled':s.includes('Pending')?'pending':'approved';function setStatus(r,s){r.dataset.status=s;const x=r.querySelector('.booking-status');x.textContent=s;x.className=`admin-status booking-status ${cls(s)}`;filter();}
-function bind(r){r.querySelector('.booking-view').onclick=()=>{document.querySelector('#booking-dialog-id').textContent=r.cells[0].textContent;document.querySelector('#booking-view-traveller').value=r.querySelector('.booking-traveller').textContent;document.querySelector('#booking-view-tour').value=r.querySelector('.booking-tour').textContent;document.querySelector('#booking-view-date').value=r.querySelector('.booking-date').textContent;document.querySelector('#booking-view-status').value=r.dataset.status;dlg.showModal()};r.querySelector('.booking-date-btn').onclick=async()=>{const d=await AdminUI.prompt({icon:'□',title:'Modify reservation date',message:'Enter the new requested date. The reservation will return to Pending approval.',inputLabel:'New reservation date',defaultValue:r.querySelector('.booking-date').textContent,placeholder:'e.g. 18 September 2026',confirmText:'Update date'});if(d){r.querySelector('.booking-date').textContent=d;setStatus(r,'Pending approval');note('Date changed; reservation returned to pending approval.')}};r.querySelector('.booking-approve').onclick=()=>{if(r.dataset.status==='Cancelled'){note('Cancelled reservations cannot be approved in this prototype.');return}setStatus(r,'Approved');note('Reservation approved. Webpay will be enabled by backend later.')};r.querySelector('.booking-cancel').onclick=async()=>{const ok=await AdminUI.confirm({tone:'danger',icon:'!',title:'Cancel reservation?',message:'The reservation will be marked as cancelled and will no longer continue to approval or payment.',details:`<b>${r.cells[0].textContent}</b><br><span>${r.querySelector('.booking-traveller').textContent} · ${r.querySelector('.booking-tour').textContent}</span>`,confirmText:'Cancel reservation',cancelText:'Keep reservation'});if(ok){setStatus(r,'Cancelled');note('Reservation cancelled.')}}}document.querySelectorAll('#booking-body tr').forEach(bind);document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dlg.close());function filter(){const q=document.querySelector('#booking-search').value.toLowerCase(),s=document.querySelector('#booking-filter').value;[...body.rows].forEach(r=>r.style.display=(r.textContent.toLowerCase().includes(q)&&(s==='all'||r.dataset.status===s))?'':'none')}document.querySelector('#booking-search').oninput=filter;document.querySelector('#booking-filter').onchange=filter;
-</script></AdminLayout>
+  <AdminPageHeader
+    title="Reservations"
+    description="Manage reservations connected to Django and PostgreSQL."
+  />
+
+  <div class="admin-panel mt-7">
+    <div class="admin-toolbar">
+      <input id="booking-search" placeholder="Search reservation, traveller or tour..." />
+      <select id="booking-filter">
+        <option value="all">All statuses</option>
+        <option value="pendiente">Pending</option>
+        <option value="esperando_aprobacion">Awaiting approval</option>
+        <option value="aprobada">Approved</option>
+        <option value="rechazada">Rejected</option>
+        <option value="cancelada">Cancelled</option>
+        <option value="expirada">Expired</option>
+        <option value="completada">Completed</option>
+      </select>
+      <button id="booking-reload" type="button">Refresh</button>
+      <button id="booking-add" type="button" class="admin-primary-btn">New reservation</button>
+    </div>
+
+    <p id="booking-message" role="status" style="padding: 12px 16px;">
+      Loading reservations...
+    </p>
+
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Reservation</th>
+            <th>Traveller</th>
+            <th>Tour</th>
+            <th>Date</th>
+            <th>Time</th>
+            <th>Passengers</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="booking-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <dialog id="booking-dialog" class="admin-modal">
+    <form id="booking-form">
+      <div class="admin-modal-head">
+        <div>
+          <p>New reservation</p>
+          <h2>Create reservation</h2>
+        </div>
+        <button class="admin-modal-close" type="button" data-close aria-label="Close">×</button>
+      </div>
+
+      <div class="admin-modal-body">
+        <div class="admin-form-grid">
+          <label class="admin-field full">
+            <span>Find traveller by name or email</span>
+            <input id="booking-user-search" autocomplete="off" minlength="2" placeholder="Type at least 2 characters" required />
+          </label>
+
+          <label class="admin-field full">
+            <span>Traveller</span>
+            <select id="booking-user" required>
+              <option value="">Search and select a traveller</option>
+            </select>
+          </label>
+
+          <label class="admin-field full">
+            <span>Tour</span>
+            <select id="booking-tour-select" required>
+              <option value="">Loading tours...</option>
+            </select>
+          </label>
+
+          <label class="admin-field">
+            <span>Reservation date</span>
+            <input id="booking-date-input" type="date" required />
+          </label>
+
+          <label class="admin-field">
+            <span>Time</span>
+            <input id="booking-time-input" type="time" required />
+          </label>
+
+          <label class="admin-field">
+  <span>Passengers</span>
+  <input
+    id="booking-passengers"
+    type="number"
+    min="1"
+    max="8"
+    value="1"
+    required
+  />
+</label>
+
+<label class="admin-field full">
+  <span>Comment</span>
+  <textarea id="booking-comment" rows="3" placeholder="Optional reservation notes"></textarea>
+</label>
+
+        <p id="booking-form-message" role="status"></p>
+      </div>
+
+      <div class="admin-modal-actions">
+        <button type="button" data-close>Close</button>
+        <button type="submit" id="booking-save" class="admin-primary-btn">Create reservation</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="booking-details" class="admin-modal">
+    <div class="admin-modal-head">
+      <div>
+        <p>Reservation details</p>
+        <h2 id="booking-details-title">Reservation</h2>
+      </div>
+      <button class="admin-modal-close" type="button" data-details-close aria-label="Close">×</button>
+    </div>
+    <div class="admin-modal-body">
+      <div class="admin-form-grid">
+        <label class="admin-field"><span>Traveller</span><input id="detail-user" readonly /></label>
+        <label class="admin-field"><span>Email</span><input id="detail-email" readonly /></label>
+        <label class="admin-field"><span>Tour</span><input id="detail-tour" readonly /></label>
+        <label class="admin-field"><span>Date</span><input id="detail-date" readonly /></label>
+        <label class="admin-field"><span>Time</span><input id="detail-time" readonly /></label>
+        <label class="admin-field"><span>Status</span><input id="detail-status" readonly /></label>
+        <label class="admin-field"><span>Passengers</span><input id="detail-passengers" readonly /></label>
+        <label class="admin-field full"><span>Comment</span><textarea id="detail-comment" rows="3" readonly></textarea></label>
+      </div>
+    </div>
+    <div class="admin-modal-actions">
+      <button type="button" data-details-close>Close</button>
+    </div>
+  </dialog>
+
+  <div id="admin-toast" class="admin-toast"></div>
+
+  <script is:inline>
+    (() => { 
+      const API_URL = 'http://localhost:8000/api';
+
+      const body = document.querySelector('#booking-body');
+      const message = document.querySelector('#booking-message');
+      const formMessage = document.querySelector('#booking-form-message');
+      const dialog = document.querySelector('#booking-dialog');
+      const details = document.querySelector('#booking-details');
+      const form = document.querySelector('#booking-form');
+      const saveButton = document.querySelector('#booking-save');
+      const userSearch = document.querySelector('#booking-user-search');
+      const userSelect = document.querySelector('#booking-user');
+      const tourSelect = document.querySelector('#booking-tour-select');
+      const toast = document.querySelector('#admin-toast');
+
+      let reservations = [];
+      let tours = [];
+      let searchTimer = null;
+      let editingReservationId = null;
+
+      const statusLabels = {
+         pendiente: 'Pending',
+         esperando_aprobacion: 'Awaiting approval',
+         aprobada: 'Approved',
+         rechazada: 'Rejected',
+        cancelada: 'Cancelled',
+        expirada: 'Expired',
+        completada: 'Completed',
+      };
+
+      
+      const statusClass = {
+        pendiente: 'pending',
+        esperando_aprobacion: 'pending',
+        aprobada: 'approved',
+        rechazada: 'cancelled',
+        cancelada: 'cancelled',
+        expirada: 'cancelled',
+        completada: 'approved',
+      };
+
+      function showToast(text) {
+        toast.textContent = text;
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 3000);
+      }
+
+      async function readResponse(response) {
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        return data;
+      }
+
+      async function getCsrfToken() {
+        const response = await fetch(`${API_URL}/csrf/`, {
+          credentials: 'include'
+        });
+        const data = await readResponse(response);
+
+        if (!data?.csrfToken) {
+          throw new Error('Django did not return a CSRF token.');
+        }
+
+        return data.csrfToken;
+      }
+
+      function addCell(row, text, className = '') {
+        const cell = document.createElement('td');
+        cell.textContent = text ?? '—';
+        if (className) cell.className = className;
+        row.appendChild(cell);
+        return cell;
+      }
+
+      function labelStatus(status) {
+        return statusLabels[status] || status || 'Unknown';
+      }
+
+      function renderReservations() {
+        body.replaceChildren();
+
+        const query = document.querySelector('#booking-search').value.trim().toLowerCase();
+        const selectedStatus = document.querySelector('#booking-filter').value;
+
+        const filtered = reservations.filter((r) => {
+          const text = [
+            r.res_id_res,
+            r.usr_nom_usr,
+            r.per_cor_per,
+            r.tou_nom_tou,
+            r.res_fec_act,
+            r.res_est_res
+          ].join(' ').toLowerCase();
+
+          return text.includes(query) &&
+            (selectedStatus === 'all' || r.res_est_res === selectedStatus);
+        });
+
+        if (!filtered.length) {
+          const row = document.createElement('tr');
+          const cell = addCell(
+            row,
+            reservations.length
+              ? 'No reservations match your filters.'
+              : 'No reservations registered in the database yet.'
+          );
+          cell.colSpan = 8;
+          body.appendChild(row);
+          return;
+        }
+
+        filtered.forEach((r) => {
+          const row = document.createElement('tr');
+          row.dataset.status = r.res_est_res || '';
+
+          addCell(row, `#${r.res_id_res}`);
+          addCell(row, r.usr_nom_usr || '—');
+          addCell(row, r.tou_nom_tou || '—');
+          addCell(row, r.res_fec_act || '—', 'booking-date');
+          addCell(row, String(r.res_hor_act || '—').slice(0, 5));
+          addCell(row, String(r.cantidad_participantes ?? 0));
+
+          const statusCell = document.createElement('td');
+          const badge = document.createElement('span');
+          badge.className = `admin-status booking-status ${statusClass[r.res_est_res] || ''}`;
+          badge.textContent = labelStatus(r.res_est_res);
+          statusCell.appendChild(badge);
+          row.appendChild(statusCell);
+
+          const actionsCell = document.createElement('td');
+          const actions = document.createElement('div');
+          actions.className = 'admin-row-actions';
+
+         
+const viewButton = document.createElement('button');
+viewButton.type = 'button';
+viewButton.textContent = 'View';
+viewButton.addEventListener('click', () => showDetails(r));
+
+const editButton = document.createElement('button');
+editButton.type = 'button';
+editButton.textContent = 'Edit';
+editButton.addEventListener('click', () => editReservation(r));
+
+
+actions.appendChild(viewButton);
+actions.appendChild(editButton);
+
+const status = r.res_est_res;
+
+function addStatusButton(label, nextStatus) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.addEventListener('click', () =>
+    updateReservationStatus(r, nextStatus)
+  );
+  actions.appendChild(button);
+}
+
+if (status === 'pendiente') {
+  addStatusButton('Send for approval', 'esperando_aprobacion');
+}
+
+if (status === 'esperando_aprobacion') {
+  addStatusButton('Approve', 'aprobada');
+  addStatusButton('Reject', 'rechazada');
+}
+
+if (status === 'aprobada') {
+  addStatusButton('Complete', 'completada');
+}
+
+
+const cancelButton = document.createElement('button');
+cancelButton.type = 'button';
+cancelButton.textContent = 'Cancel';
+cancelButton.addEventListener('click', () => cancelReservation(r));
+cancelButton.disabled = ['cancelada', 'rechazada', 'expirada', 'completada']
+  .includes(r.res_est_res);
+
+actions.appendChild(cancelButton);
+
+
+
+
+          actionsCell.appendChild(actions);
+          row.appendChild(actionsCell);
+          body.appendChild(row);
+        });
+      }
+
+      function showDetails(r) {
+        document.querySelector('#booking-details-title').textContent = `Reservation #${r.res_id_res}`;
+        document.querySelector('#detail-user').value = r.usr_nom_usr || '';
+        document.querySelector('#detail-email').value = r.per_cor_per || '';
+        document.querySelector('#detail-tour').value = r.tou_nom_tou || '';
+        document.querySelector('#detail-date').value = r.res_fec_act || '';
+        document.querySelector('#detail-time').value = String(r.res_hor_act || '').slice(0, 5);
+        document.querySelector('#detail-status').value = labelStatus(r.res_est_res);
+        document.querySelector('#detail-passengers').value = r.cantidad_participantes ?? 0;
+        document.querySelector('#detail-comment').value = r.res_com_res || '';
+        details.showModal();
+      }
+      
+async function editReservation(r) {
+  editingReservationId = r.res_id_res;
+  resetForm();
+  editingReservationId = r.res_id_res;
+
+  formMessage.textContent = '';
+  document.querySelector('#booking-save').textContent = 'Save changes';
+  document.querySelector('#booking-dialog h2').textContent =
+    `Edit reservation #${r.res_id_res}`;
+
+  try {
+    await loadTours();
+
+    // Buscar y seleccionar el usuario actual.
+    userSearch.value = r.usr_nom_usr || '';
+    await searchUsers();
+
+    const userOption = Array.from(userSelect.options).find(
+      (option) => String(option.value) === String(r.res_id_usr)
+    );
+
+    if (!userOption) {
+      const option = document.createElement('option');
+      option.value = r.res_id_usr;
+      option.textContent = `${r.usr_nom_usr} — ${r.per_cor_per || ''}`;
+      userSelect.appendChild(option);
+    }
+    userSelect.value = String(r.res_id_usr);
+
+    // Cargar los datos actuales de la reserva.
+    tourSelect.value = String(r.res_id_tou);
+    document.querySelector('#booking-date-input').value = r.res_fec_act || '';
+    document.querySelector('#booking-time-input').value =
+      String(r.res_hor_act || '').slice(0, 5);
+    document.querySelector('#booking-passengers').value =
+      r.res_can_pas ?? r.cantidad_participantes ?? 1;
+    document.querySelector('#booking-comment').value = r.res_com_res || '';
+
+    dialog.showModal();
+  } catch (error) {
+    editingReservationId = null;
+    showToast(`Could not open reservation: ${error.message}`);
+  }
+}
+  
+
+      async function updateReservationStatus(reservation, newStatus) {
+        const reservationId = reservation.res_id_res;
+
+        const labels = {
+          esperando_aprobacion: 'send for approval',
+          aprobada: 'approve',
+          rechazada: 'reject',
+          completada: 'mark as completed',
+        };
+
+        const action = labels[newStatus] || 'change the status';
+
+        if (!confirm(`Are you sure you want to ${action} reservation #${reservationId}?`)) {
+          return;
+        }
+
+        try {
+          const csrfToken = await getCsrfToken();
+
+          const response = await fetch(
+            `${API_URL}/reservas/${reservationId}/estado/`,
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken,
+              },
+              body: JSON.stringify({ estado: newStatus }),
+            }
+          );
+
+          const data = await readResponse(response);
+
+          if (!response.ok) {
+            throw new Error(
+              data.error || data.mensaje || 'Could not update reservation status.'
+            );
+          }
+
+          showToast(data.mensaje || `Reservation #${reservationId} updated.`);
+          await loadReservations();
+        } catch (error) {
+          showToast(error.message || 'Error updating reservation.');
+          console.error('Error updating reservation status:', error);
+        }
+      }
+
+      async function cancelReservation(r) {
+        const reservationId = r.res_id_res;
+
+        if (!confirm(`Cancel reservation #${reservationId}?`)) {
+          return;
+        }
+
+        try {
+          const csrfToken = await getCsrfToken();
+
+          const response = await fetch(
+            `${API_URL}/reservas/${reservationId}/cancelar/`,
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken,
+              },
+              body: JSON.stringify({}),
+            }
+          );
+
+          const data = await readResponse(response);
+
+          if (!response.ok) {
+            throw new Error(data.error || data.mensaje || 'Could not cancel reservation.');
+          }
+
+          showToast(data.mensaje || 'Reservation cancelled.');
+          await loadReservations();
+        } catch (error) {
+          showToast(error.message || 'Error cancelling reservation.');
+          console.error('Error cancelling reservation:', error);
+        }
+      }
+
+      async function loadReservations() {
+        message.textContent = 'Loading reservations...';
+
+        try {
+          const response = await fetch(`${API_URL}/reservas/`, {
+            credentials: 'include'
+          });
+
+          const data = await readResponse(response);
+
+          if (!Array.isArray(data)) {
+            throw new Error('Django returned an invalid reservations list.');
+          }
+
+          reservations = data;
+          renderReservations();
+          message.textContent = `${reservations.length} reservation(s) loaded from Django.`;
+        } catch (error) {
+          message.textContent = `Could not load reservations: ${error.message}. Check that you are logged in as an administrator.`;
+          console.error('Error loading reservations:', error);
+        }
+      }
+
+      async function loadTours() {
+        const response = await fetch(`${API_URL}/tours/admin/`, {
+          credentials: 'include'
+        });
+
+        const data = await readResponse(response);
+
+        if (!Array.isArray(data)) {
+          throw new Error('Django returned an invalid tours list.');
+        }
+
+        tours = data.filter((tour) => tour.tou_est_tou === 'activo');
+        tourSelect.replaceChildren();
+
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = tours.length ? 'Select a tour' : 'No active tours available';
+        tourSelect.appendChild(placeholder);
+
+        tours.forEach((tour) => {
+          const option = document.createElement('option');
+          option.value = tour.tou_id_tou;
+          option.textContent = `${tour.tou_nom_tou} (ID ${tour.tou_id_tou})`;
+          tourSelect.appendChild(option);
+        });
+      }
+
+      async function searchUsers() {
+        const query = userSearch.value.trim();
+
+        if (query.length < 2) {
+          userSelect.replaceChildren();
+
+          const option = document.createElement('option');
+          option.value = '';
+          option.textContent = 'Type at least 2 characters to search';
+          userSelect.appendChild(option);
+          return;
+        }
+
+        try {
+          const response = await fetch(
+            `${API_URL}/usuarios/buscar/?buscar=${encodeURIComponent(query)}`,
+            { credentials: 'include' }
+          );
+
+          const users = await readResponse(response);
+
+          userSelect.replaceChildren();
+
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.textContent = users.length ? 'Select a traveller' : 'No users found';
+          userSelect.appendChild(placeholder);
+
+          users.forEach((user) => {
+            const option = document.createElement('option');
+            option.value = user.usr_id_usr;
+            option.textContent = `${user.usr_nom_usr} — ${user.per_cor_per}`;
+            userSelect.appendChild(option);
+          });
+        } catch (error) {
+          formMessage.textContent = `Could not search users: ${error.message}`;
+          console.error('Error searching users:', error);
+        }
+      }
+
+      function resetForm() {
+        editingReservationId = null;
+        form.reset();
+        formMessage.textContent = '';
+
+        document.querySelector('#booking-save').textContent = 'Create reservation';
+        document.querySelector('#booking-details-title').textContent = 'Reservation';
+
+        userSearch.value = '';
+        userSelect.replaceChildren();
+
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Search and select a traveller';
+        userSelect.appendChild(option);
+
+        document.querySelector('#booking-passengers').value = '1';
+      }
+
+      document.querySelector('#booking-add').addEventListener('click', async () => {
+        resetForm();
+
+        try {
+          await loadTours();
+          dialog.showModal();
+        } catch (error) {
+          showToast(`Could not load tours: ${error.message}`);
+        }
+      });
+
+      userSearch.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(searchUsers, 250);
+      });
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        saveButton.disabled = true;
+        formMessage.textContent = 'Saving reservation...';
+
+        try {
+          if (!userSelect.value) {
+            throw new Error('Select a traveller from the search results.');
+          }
+
+          if (!tourSelect.value) {
+            throw new Error('Select an active tour.');
+          }
+
+          const csrfToken = await getCsrfToken();
+
+          const payload = {
+            res_id_usr: Number(userSelect.value),
+            res_id_tou: Number(tourSelect.value),
+            res_fec_act: document.querySelector('#booking-date-input').value,
+            res_hor_act: document.querySelector('#booking-time-input').value,
+            res_com_res: document.querySelector('#booking-comment').value.trim(),
+            res_can_pas: Number(document.querySelector('#booking-passengers').value),
+            res_est_res: 'pendiente'
+          };
+
+          const url = editingReservationId
+            ? `${API_URL}/reservas/${editingReservationId}/editar/`
+            : `${API_URL}/reservas/crear/`;
+
+          const response = await fetch(url, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+              'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify(payload)
+          });
+
+          await readResponse(response);
+
+          const wasEditing = editingReservationId !== null;
+
+          dialog.close();
+          resetForm();
+          await loadReservations();
+
+          showToast(
+            wasEditing
+              ? 'Reservation updated successfully.'
+              : 'Reservation created successfully.'
+          );
+        } catch (error) {
+          formMessage.textContent = error.message || 'Could not save reservation.';
+          console.error('Error saving reservation:', error);
+        } finally {
+          saveButton.disabled = false;
+        }
+      });
+
+      document.querySelector('#booking-reload').addEventListener('click', loadReservations);
+      document.querySelector('#booking-search').addEventListener('input', renderReservations);
+      document.querySelector('#booking-filter').addEventListener('change', renderReservations);
+
+      document.querySelectorAll('[data-close]').forEach((button) => {
+        button.addEventListener('click', () => dialog.close());
+      });
+
+      document.querySelectorAll('[data-details-close]').forEach((button) => {
+        button.addEventListener('click', () => details.close());
+      });
+
+      loadReservations();
+    })();
+  </script>
+</AdminLayout>

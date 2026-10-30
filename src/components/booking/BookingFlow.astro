@@ -9,6 +9,7 @@ const { tour, booking } = Astro.props;
   data-tour-slug={tour.slug}
   data-approval-days={booking.approvalBusinessDays}
   data-blocked-days={booking.blockedDayNumbers.join(',')}
+  data-api-tour-id={tour.apiId}
 >
   <div class="booking-steps" aria-label="Booking progress">
     <div class="booking-step is-active" data-step-indicator="1"><span>01</span><b>Date</b></div>
@@ -270,25 +271,154 @@ const { tour, booking } = Astro.props;
       if (summary) summary.textContent = travellers.value;
     });
 
-    requestButton?.addEventListener('click', () => {
-      if (!selectedDate || !schedule?.value) return;
-      const deadline = addBusinessDays(new Date(), approvalBusinessDays);
-      const reservationId = `AGN-${Date.now().toString().slice(-6)}`;
-      document.getElementById('approval-reservation-id').textContent = reservationId;
-      document.getElementById('approval-date').textContent = selectedLabel;
-      document.getElementById('approval-schedule').textContent = schedule.options[schedule.selectedIndex]?.text || '—';
-      document.getElementById('approval-travellers').textContent = travellers?.value || '1';
-      document.getElementById('approval-deadline').textContent = formatDate(deadline);
-      selectionPanel?.classList.add('hidden');
-      approvalPanel?.classList.remove('hidden');
-      paymentPanel?.classList.add('hidden');
-      rejectedBox?.classList.add('hidden');
-      approvalActions?.classList.remove('hidden');
-      const status = document.getElementById('approval-status');
-      if (status) { status.textContent = 'Pending approval'; status.className = 'booking-status booking-status--pending'; }
-      setStep(3);
-      window.scrollTo({ top: document.querySelector('.booking-flow')?.offsetTop - 70 || 0, behavior: 'smooth' });
+    
+requestButton?.addEventListener('click', async () => {
+  if (!selectedDate || !schedule?.value) return;
+
+  const flowElement = document.querySelector('.booking-flow');
+  const tourId = Number(flowElement?.getAttribute('data-api-tour-id'));
+  const passengerCount = Number(travellers?.value || 1);
+
+  if (!Number.isInteger(tourId) || tourId <= 0) {
+    alert('No se pudo identificar el tour. Intenta nuevamente.');
+    return;
+  }
+
+  const selectedSchedule =
+    schedule.options[schedule.selectedIndex]?.text || '';
+
+  // Convierte, por ejemplo, "08:00 AM" en "08:00".
+  const timeMatch = selectedSchedule.match(
+    /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i
+  );
+
+  if (!timeMatch) {
+    alert('El horario seleccionado no tiene un formato válido.');
+    return;
+  }
+
+  let hours = Number(timeMatch[1]);
+  const minutes = timeMatch[2];
+  const meridiem = timeMatch[3].toUpperCase();
+
+  if (meridiem === 'PM' && hours !== 12) hours += 12;
+  if (meridiem === 'AM' && hours === 12) hours = 0;
+
+  const selectedTime =
+    `${String(hours).padStart(2, '0')}:${minutes}`;
+
+  requestButton.disabled = true;
+  const originalButtonText = requestButton.textContent;
+  requestButton.textContent = 'Sending request...';
+
+  try {
+    // Obtener el token CSRF de Django.
+    const csrfResponse = await fetch(
+      'http://localhost:8000/api/csrf/',
+      {
+        method: 'GET',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      }
+    );
+
+    if (!csrfResponse.ok) {
+      throw new Error(
+        `No se pudo obtener el token CSRF (${csrfResponse.status}).`
+      );
+    }
+
+    const csrfData = await csrfResponse.json();
+
+    if (!csrfData.csrfToken) {
+      throw new Error('Django no devolvió el token CSRF.');
+    }
+
+    // Crear la solicitud real usando la sesión autenticada.
+    const response = await fetch(
+      'http://localhost:8000/api/reservas/solicitar/',
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrfData.csrfToken,
+        },
+        body: JSON.stringify({
+          res_id_tou: tourId,
+          res_fec_act: selectedDate,
+          res_hor_act: selectedTime,
+          res_can_pas: passengerCount,
+        }),
+      }
+    );
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        result.error ||
+        `No se pudo crear la reserva (HTTP ${response.status}).`
+      );
+    }
+
+    // Mostrar únicamente el identificador real devuelto por Django.
+    document.getElementById('approval-reservation-id').textContent =
+      String(result.res_id_res);
+
+    document.getElementById('approval-date').textContent =
+      selectedLabel;
+
+    document.getElementById('approval-schedule').textContent =
+      selectedSchedule;
+
+    document.getElementById('approval-travellers').textContent =
+      String(result.res_can_pas);
+
+    const deadline = addBusinessDays(
+      new Date(),
+      approvalBusinessDays
+    );
+
+    document.getElementById('approval-deadline').textContent =
+      formatDate(deadline);
+
+    selectionPanel?.classList.add('hidden');
+    approvalPanel?.classList.remove('hidden');
+    paymentPanel?.classList.add('hidden');
+    rejectedBox?.classList.add('hidden');
+    approvalActions?.classList.add('hidden');
+
+    const status = document.getElementById('approval-status');
+
+    if (status) {
+      status.textContent = 'Pending';
+      status.className = 'booking-status booking-status--pending';
+    }
+
+    setStep(3);
+
+    window.scrollTo({
+      top: document.querySelector('.booking-flow')?.offsetTop - 70 || 0,
+      behavior: 'smooth',
     });
+  } catch (error) {
+    console.error('Error creando la reserva:', error);
+
+    alert(
+      error instanceof Error
+        ? error.message
+        : 'No fue posible crear la reserva.'
+    );
+  } finally {
+    requestButton.disabled = false;
+    requestButton.innerHTML =
+      `${originalButtonText || 'Request this date'} <span>→</span>`;
+    updateRequestState();
+  }
+});
+
 
     modifyButton?.addEventListener('click', () => {
       approvalPanel?.classList.add('hidden');
